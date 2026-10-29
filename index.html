@@ -1,0 +1,130 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Glyph Editor</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header>
+    <h1>Time &amp; Temp Glyph Editor</h1>
+    <button id="save" class="primary">Submit</button>
+    <span id="status" class="status">Loading…</span>
+    <nav><a href="display.html">Display test →</a></nav>
+  </header>
+
+  <main id="grid" class="grid"></main>
+
+  <script src="common.js"></script>
+  <script>
+    const grid = document.getElementById("grid");
+    const saveBtn = document.getElementById("save");
+    const status = document.getElementById("status");
+
+    let glyphs = {};
+    const dirty = new Set();
+    const cards = {};
+
+    function setStatus(text, isError = false) {
+      status.textContent = text;
+      status.classList.toggle("error", isError);
+    }
+
+    function updateDirtyStatus() {
+      setStatus(dirty.size ? `${dirty.size} unsaved change${dirty.size === 1 ? "" : "s"}` : "All changes saved");
+    }
+
+    function markDirty(ch) {
+      dirty.add(ch);
+      cards[ch].card.classList.add("dirty");
+      updateDirtyStatus();
+    }
+
+    // Click toggles a light; dragging paints every light passed over with the
+    // same on/off state as the first one touched.
+    let paintValue = null;
+    window.addEventListener("pointerup", () => { paintValue = null; });
+
+    function setLight(ch, r, c, value) {
+      if (glyphs[ch][r][c] === value) return;
+      glyphs[ch][r][c] = value;
+      cards[ch].lights[r][c].classList.toggle("on", !!value);
+      markDirty(ch);
+    }
+
+    function buildCard(ch) {
+      const card = document.createElement("section");
+      card.className = "card";
+
+      const label = document.createElement("div");
+      label.className = "label";
+      if (ch === " ") label.innerHTML = "<small>SPACE</small>";
+      else label.textContent = ch;
+
+      const panel = document.createElement("div");
+      const lights = buildPanel(panel);
+      panel.addEventListener("pointerdown", (e) => {
+        const light = e.target.closest(".light");
+        if (!light) return;
+        e.preventDefault();
+        light.releasePointerCapture?.(e.pointerId);
+        const r = +light.dataset.row, c = +light.dataset.col;
+        paintValue = glyphs[ch][r][c] ? 0 : 1;
+        setLight(ch, r, c, paintValue);
+      });
+      panel.addEventListener("pointerover", (e) => {
+        const light = e.target.closest(".light");
+        if (!light || paintValue === null) return;
+        setLight(ch, +light.dataset.row, +light.dataset.col, paintValue);
+      });
+
+      const actions = document.createElement("div");
+      actions.className = "actions";
+      const clear = document.createElement("button");
+      clear.textContent = "Clear";
+      clear.addEventListener("click", () => {
+        for (let r = 0; r < HEIGHT; r++) for (let c = 0; c < WIDTH; c++) setLight(ch, r, c, 0);
+      });
+      const invert = document.createElement("button");
+      invert.textContent = "Invert";
+      invert.addEventListener("click", () => {
+        for (let r = 0; r < HEIGHT; r++) for (let c = 0; c < WIDTH; c++) setLight(ch, r, c, glyphs[ch][r][c] ? 0 : 1);
+      });
+      actions.append(clear, invert);
+
+      card.append(label, panel, actions);
+      cards[ch] = { card, lights };
+      paintPanel(lights, glyphs[ch]);
+      return card;
+    }
+
+    saveBtn.addEventListener("click", async () => {
+      saveBtn.disabled = true;
+      setStatus("Saving…");
+      try {
+        const { count } = await saveGlyphs(glyphs);
+        dirty.forEach((ch) => cards[ch].card.classList.remove("dirty"));
+        dirty.clear();
+        setStatus(`Saved ${count} characters to glyphs.json`);
+      } catch (err) {
+        setStatus(err.message, true);
+      } finally {
+        saveBtn.disabled = false;
+      }
+    });
+
+    window.addEventListener("beforeunload", (e) => {
+      if (dirty.size) e.preventDefault();
+    });
+
+    loadGlyphs()
+      .then((loaded) => {
+        glyphs = loaded;
+        for (const ch of Object.keys(glyphs)) grid.appendChild(buildCard(ch));
+        updateDirtyStatus();
+      })
+      .catch((err) => setStatus(`${err.message} — start the server with "python server.py"`, true));
+  </script>
+</body>
+</html>

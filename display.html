@@ -1,0 +1,102 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Sign Display Test</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header>
+    <h1>Time &amp; Temp Display Test</h1>
+    <span id="status" class="status"></span>
+    <nav><a href="index.html">← Glyph editor</a></nav>
+  </header>
+
+  <div class="controls">
+    <label>Line 1 <input id="word1" class="word" maxlength="4" value="CALL"></label>
+    <label>Line 2 <input id="word2" class="word" maxlength="4" value="JOE"></label>
+    <label>Seconds per word <input id="interval" type="number" min="0.2" step="0.1" value="2"></label>
+    <label>Alignment
+      <select id="align">
+        <option value="left">Left</option>
+        <option value="center">Center</option>
+        <option value="right">Right</option>
+      </select>
+    </label>
+  </div>
+
+  <div class="sign-wrap"><div id="sign" class="sign"></div></div>
+
+  <script src="common.js"></script>
+  <script>
+    const SLOTS = 4;
+    const sign = document.getElementById("sign");
+    const status = document.getElementById("status");
+    const inputs = [document.getElementById("word1"), document.getElementById("word2")];
+    const intervalInput = document.getElementById("interval");
+    const alignSelect = document.getElementById("align");
+
+    const slots = Array.from({ length: SLOTS }, () => {
+      const panel = document.createElement("div");
+      sign.appendChild(panel);
+      return buildPanel(panel);
+    });
+
+    let glyphs = {};
+    let showing = 0;
+    let timer = null;
+
+    // Pads a word out to SLOTS characters. Centering an odd gap puts the
+    // extra blank on the right, since the sign has no half positions.
+    function layout(word) {
+      const chars = [...word.toUpperCase()].slice(0, SLOTS);
+      const gap = SLOTS - chars.length;
+      const left = { left: 0, center: Math.floor(gap / 2), right: gap }[alignSelect.value];
+      return [...Array(left).fill(" "), ...chars, ...Array(gap - left).fill(" ")];
+    }
+
+    function render() {
+      const chars = layout(inputs[showing].value);
+      const missing = new Set();
+      chars.forEach((ch, i) => {
+        if (!glyphs[ch]) missing.add(ch);
+        paintPanel(slots[i], glyphs[ch]);
+      });
+      status.textContent = missing.size ? `No pattern for: ${[...missing].join(" ")}` : "";
+      status.classList.toggle("error", missing.size > 0);
+    }
+
+    function restart() {
+      clearInterval(timer);
+      render();
+      const seconds = Math.max(0.2, parseFloat(intervalInput.value) || 2);
+      timer = setInterval(() => {
+        showing = 1 - showing;
+        render();
+      }, seconds * 1000);
+    }
+
+    inputs.forEach((input) => input.addEventListener("input", render));
+    intervalInput.addEventListener("change", restart);
+    alignSelect.addEventListener("change", render);
+
+    async function reload() {
+      try {
+        glyphs = await loadGlyphs();
+        render();
+      } catch (err) {
+        status.textContent = `${err.message} — start the server with "python server.py"`;
+        status.classList.add("error");
+      }
+    }
+
+    // Pick up edits saved from the editor in another tab.
+    document.addEventListener("visibilitychange", () => {
+      if (document.visibilityState === "visible") reload();
+    });
+
+    reload().then(restart);
+  </script>
+</body>
+</html>
