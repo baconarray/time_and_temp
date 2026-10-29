@@ -16,7 +16,7 @@
   <div class="controls">
     <label>Line 1 <input id="word1" class="word" maxlength="4" value="CALL"></label>
     <label>Line 2 <input id="word2" class="word" maxlength="4" value="JOE"></label>
-    <label>Seconds per word <input id="interval" type="number" min="0.2" step="0.1" value="2"></label>
+    <label>Seconds per slide <input id="interval" type="number" min="0.2" step="0.1" value="2"></label>
     <label>Alignment
       <select id="align">
         <option value="left">Left</option>
@@ -24,6 +24,8 @@
         <option value="right">Right</option>
       </select>
     </label>
+    <label class="check"><input id="showTime" type="checkbox" checked> Time</label>
+    <label class="check"><input id="showTemp" type="checkbox" checked> Temperature</label>
   </div>
 
   <div class="sign-wrap"><div id="sign" class="sign"></div></div>
@@ -31,40 +33,92 @@
   <script src="common.js"></script>
   <script>
     const SLOTS = 4;
+    const TIME_ZONE = "America/New_York";
+    // Portland, ME. Temperature comes from Open-Meteo (free, no API key).
+    const WEATHER_URL = "https://api.open-meteo.com/v1/forecast?latitude=43.6591&longitude=-70.2568"
+      + "&current=temperature_2m&temperature_unit=fahrenheit";
+    const WEATHER_REFRESH_MS = 10 * 60 * 1000;
+
     const sign = document.getElementById("sign");
     const status = document.getElementById("status");
     const inputs = [document.getElementById("word1"), document.getElementById("word2")];
     const intervalInput = document.getElementById("interval");
     const alignSelect = document.getElementById("align");
+    const showTime = document.getElementById("showTime");
+    const showTemp = document.getElementById("showTemp");
 
-    const slots = Array.from({ length: SLOTS }, () => {
+    // Four character panels, with the colon lights between the second and third.
+    const slots = [];
+    let colonLights = [];
+    for (let i = 0; i < SLOTS; i++) {
+      if (i === 2) {
+        const colon = document.createElement("div");
+        colon.className = "colon";
+        colonLights = [0, 1].map(() => colon.appendChild(Object.assign(document.createElement("div"), { className: "light" })));
+        sign.appendChild(colon);
+      }
       const panel = document.createElement("div");
       sign.appendChild(panel);
-      return buildPanel(panel);
-    });
+      slots.push(buildPanel(panel));
+    }
 
     let glyphs = {};
-    let showing = 0;
+    let temperature = null;
+    let weatherError = "";
+    let slideIndex = 0;
     let timer = null;
 
     // Pads a word out to SLOTS characters. Centering an odd gap puts the
     // extra blank on the right, since the sign has no half positions.
-    function layout(word) {
+    function layout(word, align = alignSelect.value) {
       const chars = [...word.toUpperCase()].slice(0, SLOTS);
       const gap = SLOTS - chars.length;
-      const left = { left: 0, center: Math.floor(gap / 2), right: gap }[alignSelect.value];
+      const left = { left: 0, center: Math.floor(gap / 2), right: gap }[align];
       return [...Array(left).fill(" "), ...chars, ...Array(gap - left).fill(" ")];
     }
 
+    // 12-hour Portland time as four slots, e.g. " 932" or "1205" (the colon is separate).
+    function timeChars() {
+      const parts = new Intl.DateTimeFormat("en-US", {
+        timeZone: TIME_ZONE, hour: "numeric", minute: "2-digit", hour12: true,
+      }).formatToParts(new Date());
+      const hour = parts.find((p) => p.type === "hour").value;
+      const minute = parts.find((p) => p.type === "minute").value;
+      return layout(hour + minute, "right");
+    }
+
+    function tempChars() {
+      return layout(`${Math.round(temperature)}°`, "right");
+    }
+
+    // The slides currently in rotation, each returning { chars, colon }.
+    function activeSlides() {
+      const slides = inputs
+        .filter((input) => input.value.trim())
+        .map((input) => () => ({ chars: layout(input.value), colon: false }));
+      if (showTime.checked) slides.push(() => ({ chars: timeChars(), colon: true }));
+      if (showTemp.checked && temperature !== null) slides.push(() => ({ chars: tempChars(), colon: false }));
+      return slides;
+    }
+
     function render() {
-      const chars = layout(inputs[showing].value);
+      const slides = activeSlides();
+      const { chars, colon } = slides.length
+        ? slides[slideIndex % slides.length]()
+        : { chars: layout(""), colon: false };
+
       const missing = new Set();
       chars.forEach((ch, i) => {
         if (!glyphs[ch]) missing.add(ch);
         paintPanel(slots[i], glyphs[ch]);
       });
-      status.textContent = missing.size ? `No pattern for: ${[...missing].join(" ")}` : "";
-      status.classList.toggle("error", missing.size > 0);
+      colonLights.forEach((light) => light.classList.toggle("on", colon));
+
+      const problems = [];
+      if (missing.size) problems.push(`No pattern for: ${[...missing].join(" ")}`);
+      if (showTemp.checked && weatherError) problems.push(weatherError);
+      status.textContent = problems.join(" · ");
+      status.classList.toggle("error", problems.length > 0);
     }
 
     function restart() {
@@ -72,14 +126,26 @@
       render();
       const seconds = Math.max(0.2, parseFloat(intervalInput.value) || 2);
       timer = setInterval(() => {
-        showing = 1 - showing;
+        slideIndex = (slideIndex + 1) % Math.max(1, activeSlides().length);
         render();
       }, seconds * 1000);
     }
 
+    async function updateWeather() {
+      try {
+        const res = await fetch(WEATHER_URL);
+        if (!res.ok) throw new Error(res.status);
+        temperature = (await res.json()).current.temperature_2m;
+        weatherError = "";
+      } catch (err) {
+        weatherError = "Couldn't fetch the Portland temperature";
+      }
+      render();
+    }
+
     inputs.forEach((input) => input.addEventListener("input", render));
+    [alignSelect, showTime, showTemp].forEach((el) => el.addEventListener("change", render));
     intervalInput.addEventListener("change", restart);
-    alignSelect.addEventListener("change", render);
 
     async function reload() {
       try {
@@ -97,6 +163,8 @@
     });
 
     reload().then(restart);
+    updateWeather();
+    setInterval(updateWeather, WEATHER_REFRESH_MS);
   </script>
 </body>
 </html>

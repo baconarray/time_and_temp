@@ -4,7 +4,7 @@
   --text: #e8e6e1;
   --muted: #9a9ca3;
   --accent: #f5c542;
-  --light-off: #4a4d52;
+  --light-off: #27282a;
   --light-on: #ffd23f;
   --light-glow: rgba(255, 210, 63, 0.75);
   --light-size: 18px;
@@ -124,8 +124,9 @@ button:disabled { opacity: 0.5; cursor: default; }
 .sign {
   --light-size: 22px;
   --light-gap: 7px;
+  --char-gap: 50px;
   display: flex;
-  gap: 18px;
+  gap: var(--char-gap);
   padding: 24px;
   background: #000;
   border: 10px solid #2e3035;
@@ -133,6 +134,23 @@ button:disabled { opacity: 0.5; cursor: default; }
 }
 .sign .panel { padding: 0; }
 
+/* The two colon lights between the second and third characters. The column
+   takes up no width and cancels its own flex gaps, so every character stays
+   --char-gap apart and the lights are centered in the gap. */
+.colon {
+  width: 0;
+  margin-inline: calc(var(--char-gap) / -2);
+  display: grid;
+  grid-template-columns: var(--light-size);
+  grid-template-rows: repeat(9, var(--light-size));
+  gap: var(--light-gap);
+}
+.colon .light { transform: translateX(-50%); }
+.colon .light:nth-child(1) { grid-row: 3; }
+.colon .light:nth-child(2) { grid-row: 7; }
+
+.controls .check { flex-direction: row; align-items: center; gap: 6px; color: var(--text); }
+
 @media (max-width: 700px) {
-  .sign { --light-size: 10px; --light-gap: 4px; gap: 10px; padding: 14px; }
+  .sign { --light-size: 10px; --light-gap: 4px; --char-gap: 26px; padding: 14px; }
 }

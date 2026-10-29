@@ -1,6 +1,6 @@
-# time_and_temp
+# Time and Temp
 
-A 5×9 light-grid font copied from the sign on the Time and Temperature building in Portland, ME, plus tools for drawing it.
+A 5×9 light-grid font copied from the sign on the Time and Temperature building in Portland, ME, plus tools for drawing it. The goal of this project is to create an interface that allows one to create a JSON file with the shape of glyphs from the Time and Temp sign to be used in other projects. 
 
 ```
 python server.py
