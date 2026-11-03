@@ -23,7 +23,7 @@ Align=left
 ShowTime=1
 ShowTemp=1
 
-; Size of the sign. 1 matches the website (770 px wide).
+; Size of the sign. 1 is 858 px wide.
 Scale=0.5
 
 ; Colors as R,G,B. Background takes a fourth value for opacity (0-255).

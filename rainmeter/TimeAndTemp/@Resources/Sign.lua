@@ -6,8 +6,11 @@ local TICK_MS = 25                 -- must match Update= in TimeAndTemp.ini
 local DEGREE = "\194\176"          -- the UTF-8 bytes of the glyphs.json key
 local GLOW_ALPHA = 110
 
--- Website sizes in pixels at Scale=1 (see .sign in style.css, minus the frame).
-local LIGHT, GAP, CHAR_GAP, PADDING = 22, 7, 50, 24
+-- Sizes in pixels at Scale=1, matching .sign in style.css. LIGHT + GAP is the
+-- spacing between light centers; BULB is the size each light is drawn at.
+-- From photos of the real sign: letters sit about 3.75 light spacings apart,
+-- center to center, and bulbs are about 40% of the spacing across.
+local LIGHT, GAP, CHAR_GAP, PADDING, BULB = 22, 7, 86, 24, 12
 
 local glyphs = {}
 local settings = {}
@@ -264,9 +267,9 @@ local function paint()
   if paintKey == lastPaint then return end
   lastPaint = paintKey
 
-  local radius = px(LIGHT / 2)
+  local radius = px(BULB / 2)
   local lit = ("Fill Color %s | StrokeWidth %s | Stroke Color %s,%d"):format(
-    blend(level), px(LIGHT / 4), table.concat(settings.lightOn, ",", 1, 3),
+    blend(level), px(BULB / 3), table.concat(settings.lightOn, ",", 1, 3),
     math.floor(GLOW_ALPHA * level + 0.5))
   local unlit = ("Fill Color %s | StrokeWidth 0"):format(blend(0))
   for i, light in ipairs(lights) do
