@@ -1,0 +1,315 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <base target="_top">
+  <meta charset="utf-8">
+  <!--
+    Lobby display for the kiosk deck. Served by doGet() in kiosk.gs (Part 3).
+    Regular slides come from the published deck in two iframes that take
+    turns: one is on screen while the other loads the next slide. Sign slides
+    are drawn here as SVG, with the same light positions setupTimeAndTemp()
+    uses, so the clock is live.
+  -->
+  <style>
+    html, body { margin: 0; height: 100%; background: #000; overflow: hidden; cursor: none; }
+    #stage { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); overflow: hidden; }
+    .layer { position: absolute; inset: 0; opacity: 0; transition: opacity 0.6s ease; }
+    .layer.on { opacity: 1; }
+    iframe.layer { width: 100%; height: 100%; border: 0; pointer-events: none; }
+    #sign img, #sign svg { position: absolute; inset: 0; width: 100%; height: 100%; }
+    #sign circle { transition: fill 0.2s linear, stroke-opacity 0.2s linear; }
+    #message { position: absolute; left: 0; right: 0; bottom: 8px; color: #888;
+      font: 14px sans-serif; text-align: center; }
+  </style>
+</head>
+<body>
+  <div id="stage">
+    <iframe class="layer" id="frameA" title="slide"></iframe>
+    <iframe class="layer" id="frameB" title="slide"></iframe>
+    <div class="layer" id="sign">
+      <img id="building" alt="">
+      <svg id="lights" xmlns="http://www.w3.org/2000/svg" preserveAspectRatio="none"></svg>
+    </div>
+  </div>
+  <div id="message">Loading…</div>
+
+  <script>
+    const SLOTS = 4, WIDTH = 5, HEIGHT = 9, DEGREE = '°';
+    const RELOAD_AFTER_MS = 2 * 60 * 1000; // a preloaded slide older than this is reloaded
+    const LOAD_TIMEOUT_MS = 15000;
+    const SETTLE_MS = 1000; // time for an embed to draw after its load event
+
+    const stage = document.getElementById('stage');
+    const frames = [document.getElementById('frameA'), document.getElementById('frameB')];
+    const signLayer = document.getElementById('sign');
+    const svg = document.getElementById('lights');
+    const message = document.getElementById('message');
+
+    let data = null;      // from kioskData()
+    let temp = null;
+    let bulbs = [];       // SVG circles, in the order of data.geometry.lights
+    let pos = -1;         // index into data.slides of the slide on screen
+    let current = null;   // the slide on screen
+    let timer = null;
+    let shownSignKey = null;
+
+    // ------------------------------------------------------------ server calls
+
+    function call(name, arg) {
+      return new Promise((resolve, reject) => {
+        google.script.run.withSuccessHandler(resolve).withFailureHandler(reject)[name](arg);
+      });
+    }
+
+    async function start() {
+      try {
+        const first = await call('kioskData', true);
+        temp = first.temp;
+        build(first);
+        message.textContent = '';
+        advance();
+        setInterval(refreshPlaylist, first.refreshMinutes * 60000);
+        setInterval(refreshTemp, first.tempRefreshMinutes * 60000);
+        setInterval(tick, 1000);
+      } catch (e) {
+        message.textContent = 'Could not load the slideshow (' + e + '). Retrying…';
+        setTimeout(start, 30000);
+      }
+    }
+
+    async function refreshPlaylist() {
+      try {
+        const next = await call('kioskData', false);
+        // Keep the slide on screen as the reference point in the new order.
+        const at = current ? next.slides.findIndex((s) => s.id === current.id) : -1;
+        data = Object.assign(next, { image: data.image });
+        temp = next.temp;
+        pos = at >= 0 ? at : Math.min(pos, next.slides.length - 1);
+      } catch (e) {
+        console.warn('Playlist refresh failed; keeping the old one.', e);
+      }
+    }
+
+    async function refreshTemp() {
+      try {
+        temp = await call('kioskTemp');
+      } catch (e) {
+        console.warn('Temperature refresh failed.', e);
+      }
+    }
+
+    // ------------------------------------------------------------ setup
+
+    function build(d) {
+      data = d;
+      // Size the stage to the deck's aspect ratio, as large as the screen allows.
+      const ratio = d.pageW / d.pageH;
+      const fit = () => {
+        const w = Math.min(window.innerWidth, window.innerHeight * ratio);
+        stage.style.width = w + 'px';
+        stage.style.height = w / ratio + 'px';
+      };
+      fit();
+      window.addEventListener('resize', fit);
+
+      const fade = d.fadeSeconds + 's';
+      document.querySelectorAll('.layer').forEach((el) => { el.style.transitionDuration = fade; });
+
+      signLayer.style.background = d.background;
+      const img = document.getElementById('building');
+      if (d.image) img.src = d.image; else img.remove();
+
+      svg.setAttribute('viewBox', '0 0 ' + d.pageW + ' ' + d.pageH);
+      const ns = 'http://www.w3.org/2000/svg';
+      bulbs = d.geometry.lights.map((light) => {
+        const c = document.createElementNS(ns, 'circle');
+        c.setAttribute('cx', light.x);
+        c.setAttribute('cy', light.y);
+        c.setAttribute('r', d.geometry.bulb / 2);
+        c.setAttribute('stroke', d.lightOn);
+        c.setAttribute('stroke-width', d.geometry.glow);
+        c.style.transitionDuration = d.lightFadeSeconds + 's';
+        svg.appendChild(c);
+        return c;
+      });
+      paintLights(new Array(bulbs.length).fill(false));
+    }
+
+    // ------------------------------------------------------------ playback
+
+    function advance() {
+      const slides = data.slides;
+      let next = null;
+      for (let tries = 0; tries < slides.length; tries++) {
+        pos = (pos + 1) % slides.length;
+        if (playable(slides[pos])) { next = slides[pos]; break; }
+      }
+      if (!next) { schedule(5000); return; }
+      show(next).then(() => {
+        schedule(next.seconds * 1000);
+        preloadAfter(pos);
+      });
+    }
+
+    function schedule(ms) {
+      clearTimeout(timer);
+      timer = setTimeout(advance, ms);
+    }
+
+    /**
+     * Whether a slide is one of the four sign slides. The server sends -1 for
+     * regular slides. Anything that isn't 0-3 counts as regular, because
+     * google.script.run drops null values, so a null would arrive as a
+     * missing property.
+     */
+    function isSign(slide) {
+      return slide.sign === 0 || slide.sign === 1 || slide.sign === 2 || slide.sign === 3;
+    }
+
+    function playable(slide) {
+      return !isSign(slide) || !signFrame(slide.sign).skip;
+    }
+
+    async function show(slide) {
+      const wasSign = !!current && isSign(current);
+      current = slide;
+      if (isSign(slide)) {
+        paintSign(slide.sign, wasSign);
+        setActive(signLayer);
+        return;
+      }
+      const frame = await loadInto(slideUrl(slide.id));
+      if (current === slide) setActive(frame);
+    }
+
+    /**
+     * Starts loading the next regular slide in the iframe that's off screen,
+     * looking past any sign slides in between, so it's ready when its turn
+     * comes.
+     */
+    function preloadAfter(from) {
+      const slides = data.slides;
+      for (let i = 1; i <= slides.length; i++) {
+        const s = slides[(from + i) % slides.length];
+        if (!isSign(s) && playable(s)) {
+          loadInto(slideUrl(s.id));
+          return;
+        }
+      }
+    }
+
+    function slideUrl(id) {
+      return data.embed + '/embed?start=false&loop=false&rm=minimal&slide=id.' + encodeURIComponent(id) +
+        '#slide=id.' + encodeURIComponent(id);
+    }
+
+    /**
+     * Resolves with an iframe showing url. It reuses a frame that loaded the
+     * same url recently. Otherwise it loads the url into a frame that isn't
+     * on screen.
+     */
+    function loadInto(url) {
+      const fresh = frames.find((f) => f.dataset.url === url && Date.now() - f.loadedAt < RELOAD_AFTER_MS);
+      if (fresh) return fresh.ready;
+      const idle = frames.filter((f) => !f.classList.contains('on'));
+      const frame = idle.sort((a, b) => (a.loadedAt || 0) - (b.loadedAt || 0))[0] || frames[0];
+      frame.dataset.url = url;
+      frame.loadedAt = Date.now();
+      frame.ready = new Promise((resolve) => {
+        const finish = () => { clearTimeout(timeout); setTimeout(() => resolve(frame), SETTLE_MS); };
+        const timeout = setTimeout(() => resolve(frame), LOAD_TIMEOUT_MS);
+        frame.onload = finish;
+      });
+      frame.src = url;
+      return frame.ready;
+    }
+
+    function setActive(layer) {
+      document.querySelectorAll('.layer').forEach((el) => el.classList.toggle('on', el === layer));
+    }
+
+    // ------------------------------------------------------------ the sign
+
+    /** Keeps the clock current while the time slide is up. */
+    function tick() {
+      if (current && isSign(current) && shownSignKey !== signKey(current.sign)) {
+        paintSign(current.sign, false);
+      }
+    }
+
+    /**
+     * Lights up sign slide k. Between two sign slides the lit lights fade
+     * off first and the new ones fade on, like the real sign.
+     */
+    function paintSign(k, fadeBetween) {
+      const frame = signFrame(k);
+      const state = lightsOn(frame.chars, frame.colon);
+      shownSignKey = signKey(k);
+      if (fadeBetween) {
+        paintLights(state.map(() => false));
+        setTimeout(() => { if (shownSignKey === signKey(k)) paintLights(state); }, data.lightFadeSeconds * 1000);
+      } else {
+        paintLights(state);
+      }
+    }
+
+    function paintLights(state) {
+      bulbs.forEach((c, i) => {
+        c.style.fill = state[i] ? data.lightOn : data.lightOff;
+        c.style.strokeOpacity = state[i] ? data.glowAlpha : 0;
+      });
+    }
+
+    function signKey(k) {
+      const f = signFrame(k);
+      return k + '|' + f.chars.join('') + f.colon;
+    }
+
+    /** What sign slide k shows: 0 and 1 are the words, 2 the time, 3 the temperature. */
+    function signFrame(k) {
+      if (k === 0 || k === 1) {
+        const word = String(data.words[k] || '').trim();
+        return { chars: layout(word, data.align), colon: false, skip: word === '' };
+      }
+      if (k === 2) return { chars: timeChars(), colon: true, skip: false };
+      if (temp === null || temp === undefined) return { chars: layout('', 'left'), colon: false, skip: true };
+      return { chars: layout(temp + DEGREE, 'right'), colon: false, skip: false };
+    }
+
+    /** Pads a word out to 4 slots. Centering puts an odd extra blank on the right. */
+    function layout(word, align) {
+      const chars = Array.from(word.toUpperCase()).slice(0, SLOTS);
+      const gap = SLOTS - chars.length;
+      const left = { left: 0, center: Math.floor(gap / 2), right: gap }[String(align).toLowerCase()] || 0;
+      const out = new Array(left).fill(' ').concat(chars);
+      while (out.length < SLOTS) out.push(' ');
+      return out;
+    }
+
+    /** 12-hour time in the deck's time zone as four slots, e.g. " 932". */
+    function timeChars() {
+      const parts = new Intl.DateTimeFormat('en-US', {
+        timeZone: data.timeZone, hour: 'numeric', minute: '2-digit', hourCycle: 'h23',
+      }).formatToParts(new Date());
+      const get = (type) => parts.find((p) => p.type === type).value;
+      const hour = Number(get('hour')) % 12 || 12;
+      return layout(hour + get('minute'), 'right');
+    }
+
+    /** One true/false per light: the four panels, then the two colon lights. */
+    function lightsOn(chars, colon) {
+      const out = [];
+      chars.forEach((ch) => {
+        const matrix = data.glyphs[ch];
+        for (let r = 0; r < HEIGHT; r++) {
+          for (let c = 0; c < WIDTH; c++) out.push(!!(matrix && matrix[r] && matrix[r][c] === 1));
+        }
+      });
+      out.push(colon, colon);
+      return out;
+    }
+
+    start();
+  </script>
+</body>
+</html>
